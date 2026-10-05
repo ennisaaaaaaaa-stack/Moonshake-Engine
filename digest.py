@@ -39,6 +39,16 @@ def _dedup_key(ev):
     return (ev.get("organ_id", "?"), ev.get("payload_summary", "?"))
 
 
+def _split_safe(oid):
+    """消费侧兜底：缺失/畸形 organ_id（三级、空段）不炸聚合——落进
+    ('?', 原串) 桶可追溯。契约照抛 ValueError（脏数据是 bug），
+    优雅降级是消费方的选择（审计④：M10 只兜了缺失没兜畸形）。"""
+    try:
+        return split_organ_id(oid or "?")
+    except ValueError:
+        return ("?", str(oid))
+
+
 def digest(events, top_k=DEFAULT_TOP_K, token_cap=DEFAULT_TOKEN_CAP, organ_filter=None):
     """聚合感官收件箱概览。
 
@@ -61,13 +71,13 @@ def digest(events, top_k=DEFAULT_TOP_K, token_cap=DEFAULT_TOKEN_CAP, organ_filte
             events = [e for e in events if e.get("organ_id", "") == organ_filter]
         else:
             events = [e for e in events
-                      if split_organ_id(e.get("organ_id") or "?")[0] == organ_filter]
+                      if _split_safe(e.get("organ_id"))[0] == organ_filter]
 
     # ── 聚合：organ → channel → 去重条目 ──
     buckets = defaultdict(lambda: defaultdict(dict))  # organ → channel → key → entry
     raw_counts = defaultdict(lambda: defaultdict(int))
     for ev in events:
-        organ, channel = split_organ_id(ev.get("organ_id") or "?")
+        organ, channel = _split_safe(ev.get("organ_id"))
         key = _dedup_key(ev)
         bucket = buckets[organ][channel]
         if key not in bucket:

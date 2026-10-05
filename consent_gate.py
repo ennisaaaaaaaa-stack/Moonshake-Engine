@@ -5,19 +5,18 @@
 → 全模态兜底 min_tier_full=999 不可达 = 原始样本默认永不跟着事件走；
   哪个器官想存全量，单独传 policy 点头。
 
-铁律：本模块零依赖——不 import 任何记忆库、不碰任何存储、零副作用。
+铁律：不 import 任何记忆库、不碰任何存储、零副作用——运行时依赖仅
+本仓 contract（策略与契约同源，单一事实源，不留两份漂移的定义）。
 策略语义与 tideline sensory_write 的 DEFAULT_POLICY 完全等价（两家库同一枚拍板），
 Tideline 侧守卫保留当纵深防御（已建已审，白留的保险不拆）。
 """
-
-DEFAULT_POLICY = {"*": {"min_degraded": 1, "min_tier_full": 999}}
 
 
 def enforce_policy(event, policy=None):
     """纯函数：事件出关裁决。
 
-    返回 (verdict, action)：
-      verdict = dict(ok=bool, action=str, reason=str, modality=str)
+    返回单个 dict（不是元组；那层括号是折行不是 tuple——审计③勘误）：
+      {ok: bool, action: str, reason: str, modality: str}
       action ∈ {"reject", "write_degraded", "write_full"}
 
     规则（与 tideline sensory_write 对齐）：
@@ -26,12 +25,15 @@ def enforce_policy(event, policy=None):
       tier ≥ min_tier_full         → write_full（全量放行）
     策略匹配：先精确 modality 键，miss 后回落 "*" 兜底——无 "*" 键的策略是
     白名单 fail-closed（审阅时签的口径：与「器官单独点头」语义自洽）。
+    显式键按「键在场」判（in），不看值真值——policy 写 {"audio": {}} 是
+    显式收紧（档位全默认），不是无声回落 *（审计zhaozhao3：or 回落吞空
+    条目与 fail-closed 哲学相反）。
     """
-    from contract import DEFAULT_POLICY as _DEF  # 便于单文件独立测试；包内导入另走相对路径
+    from contract import DEFAULT_POLICY as _DEF  # 单一事实源在 contract；本模块不存副本（审计③漂移风险）
 
     pol = policy if policy is not None else _DEF
     modality = event.get("modality", "")
-    rule = pol.get(modality) or pol.get("*")
+    rule = pol[modality] if modality in pol else pol.get("*")
     if rule is None:
         return ({"ok": False, "action": "reject",
                  "reason": f"策略无 '{modality}' 键且无 '*' 兜底（fail-closed）", "modality": modality})

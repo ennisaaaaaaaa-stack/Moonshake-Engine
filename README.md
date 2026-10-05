@@ -39,6 +39,8 @@ Moonshake is a library, not a daemon. Nothing in it runs on its own — no loop,
 
 The two halves never need to share a process. Senses run when the world has something to say; attention runs when the agent wakes. Moonshake is the contract between them.
 
+> **Wiring note (read before pianist integration).** `row_id` seq allocation is read-max-then-append within one day file. Two organ crons writing the same day file in the same second can collide on seq (duplicate `row_id`, `read_since` cursor skips a row). v1 scope is single-writer; before multi-organ wiring goes live, either route all writes through a single writer process or add a writer/process slot to the seq. On the books — audit ⑤.
+
 ```python
 # ── organ side (cron): something was heard ──
 from contract import validate_event

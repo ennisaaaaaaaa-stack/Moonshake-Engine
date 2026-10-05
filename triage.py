@@ -18,6 +18,9 @@ validate 之后、gate 之前。
      （triage_stats.jsonl，工具层的事），本模块纯函数不管。
   4. 限流与去重需要状态：state 由调用方持有、逐事件传回（结果里的
      "state" 原样传给下一次调用），本模块不藏可变全局。
+     state 全 JSON 可序列化（时间一律 ISO 字符串，进出本模块时解析）——
+     主调用形态是 cron：每轮新进程，state 必须落盘跨轮往返（审计②）。
+     ts 混流（naive/aware）按墙钟比较：统一剥 tz 再相减，不炸 TypeError（审计zhaozhao1）。
 
 注入黑名单第一版自写，专抓 dumb injection（「忽略之前所有指令」
 级别的明文攻击）；这层是纵深防御的第三层，不是承重墙——承重的
@@ -27,6 +30,10 @@ validate 之后、gate 之前。
 
 import re
 from datetime import datetime
+
+# 兜底桶：ts 坏的事件也计入限流（key 后缀 |badts，与正常小时桶同 cap）。
+# 限流的存在意义是「卡死的 collector 不许淹日志」——而坏 ts 恰是卡死的
+# 最典型症状，ts 坏 = 窗口跳过但不能 = 限流失明（审计①，v2 改口径）。
 
 DEFAULT_RULES = {
     "rate_per_hour": 60,        # 单器官每小时放行上限（计数的是放行者）
@@ -58,14 +65,31 @@ def _patterns_for(rules):
     return [re.compile(p, re.IGNORECASE) for p in (pats or [])]
 
 
+def _parse_ts(raw):
+    """ts → datetime；不可解析返回 None。naive/aware 统一剥成 naive 墙钟——
+    混流相减不炸 TypeError（契约只要求 ts 非空，混流合法）。"""
+    try:
+        t = datetime.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        return None
+    return t.replace(tzinfo=None) if t.tzinfo is not None else t
+
+
+def _iso(t):
+    """datetime → ISO 字符串（state 里只存字符串，进出解析——审计②）。"""
+    return t.isoformat()
+
+
 def triage(event, rules=None, state=None):
     """机械分诊。返回 {"keep": bool, "reason": str, "state": 新状态}。
 
     reason：放行时 "ok"；否则为首个命中的规则名（归因顺序）：
       confidence_floor → injection_pattern → blocklist → dedup → rate_cap
     state：不透明（近期窗口），调用方原样传回下一次调用。
-    ts 无法解析时：内容检查照跑，窗口检查（dedup/rate）跳过——
-    契约只要求 ts 非空字符串，格式由调用方保证（v1 口径）。
+      全 JSON 可序列化：时间一律 ISO 字符串，本函数进出时解析（cron 落盘口径）。
+    ts 无法解析时：内容检查照跑，窗口检查（dedup/rate）跳过——但计入
+    per-organ 兜底桶限流（审计①：坏 ts 恰是卡死 collector 的典型症状，
+    v1「全跳过」口径已被自己要防的敌人穿透，v2 改为兜底桶）。
     """
     r = dict(DEFAULT_RULES)
     if rules:
@@ -92,16 +116,20 @@ def triage(event, rules=None, state=None):
             return {"keep": False, "reason": "blocklist", "state": st}
 
     # 4/5. 窗口检查需要 ts
-    try:
-        t = datetime.fromisoformat(str(event.get("ts", "")))
-    except ValueError:
-        t = None
+    t = _parse_ts(event.get("ts", ""))
     if t is None:
-        return {"keep": True, "reason": "ok", "state": st}
+        # 坏 ts：窗口跳过，但兜底桶限流照计（审计①）
+        hkey = f"{oid}|badts"
+        if st["hour"].get(hkey, 0) >= r["rate_per_hour"]:
+            return {"keep": False, "reason": "rate_cap", "state": st}
+        st2 = {"recent": st["recent"], "hour": {**st["hour"], hkey: st["hour"].get(hkey, 0) + 1}}
+        return {"keep": True, "reason": "ok", "state": st2}
 
     window_s = r["dedup_window_min"] * 60
-    recent = [(ot, s) for (ot, s) in st["recent"].get(oid, [])
-              if (t - ot).total_seconds() <= window_s]
+    # 窗口内存原始 ISO 串（state 只存字符串），过期/坏串在此淘汰
+    recent = [(ots, s) for (ots, s) in st["recent"].get(oid, [])
+              if _parse_ts(ots) is not None
+              and (t - _parse_ts(ots)).total_seconds() <= window_s]
 
     # 4. 去重窗：同目标窗口内折叠（digest 的去重在入境之后，这层先挡洪水）
     if any(s == summary for (_, s) in recent):
@@ -116,6 +144,6 @@ def triage(event, rules=None, state=None):
         st2 = {"recent": {**st["recent"], oid: recent}, "hour": hour}
         return {"keep": False, "reason": "rate_cap", "state": st2}
 
-    st2 = {"recent": {**st["recent"], oid: recent + [(t, summary)]},
+    st2 = {"recent": {**st["recent"], oid: recent + [(_iso(t), summary)]},
            "hour": {**hour, hkey: hour.get(hkey, 0) + 1}}
     return {"keep": True, "reason": "ok", "state": st2}

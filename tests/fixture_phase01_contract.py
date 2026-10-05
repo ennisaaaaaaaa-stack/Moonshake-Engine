@@ -132,6 +132,22 @@ def main():
     check("M10a 空事件流不炸", d_empty["organs"] == {} and d_empty["dropped_by_cap"] is False)
     d_bad = digest_m.digest([{"modality": "audio"}])
     check("M10b 缺 organ_id 优雅降级到 '?'", "?" in d_bad["organs"])
+    d_mal = digest_m.digest([ev(organ_id="a.b.c", payload_summary="畸形id不炸聚合")])
+    check("M10c 畸形 organ_id（三级）消费侧兜底不炸，落 '?' 桶（审计④）",
+          "?" in d_mal["organs"]
+          and d_mal["organs"]["?"]["channels"] and "a.b.c" in str(d_mal["organs"]["?"]),
+          str(d_mal["organs"].get("?", "")))
+
+    # ── M4c/M4d 显式空键不被 or 回落吞（审计zhaozhao3） ──
+    # * 桶故意给 min_tier_full=1：or 回落版会把 tier3 判成 write_full，
+    # in 版按 audio 显式空键（默认档 999）判 write_degraded——两版可分，钉才有效
+    pol_empty = {"audio": {}, "*": {"min_degraded": 1, "min_tier_full": 1}}
+    ve = consent.enforce_policy(ev(consent_tier=3), policy=pol_empty)
+    check("M4c 显式空 audio 键=显式收紧（默认档999），不回落 *（tier3 仍降级）",
+          ve["ok"] and ve["action"] == "write_degraded", ve["reason"])
+    vempty0 = consent.enforce_policy(ev(consent_tier=0), policy=pol_empty)
+    check("M4d 显式空键档位语义照走（tier0 < min_degraded 1 = 拒）",
+          not vempty0["ok"] and vempty0["action"] == "reject", vempty0["reason"])
 
     n = len(results)
     failed = [name for name, ok in results if not ok]

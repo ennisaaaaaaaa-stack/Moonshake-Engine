@@ -218,6 +218,37 @@ check("T9 限流：第 4 条拦（rate=3）",
 t10 = triage.triage(mk_event(ts="not-a-date"))
 check("T10 ts 不可解析：内容检查照跑、窗口跳过（v1 口径）", t10["keep"])
 
+# ── 审计①②zhaozhao1/2 复验钉（v2 口径） ──
+st_b = None
+kept_bad = 0
+verdicts_bad = []
+for i in range(80):
+    r_b = triage.triage(mk_event(ts="garbage", payload_summary=f"flood {i}"), state=st_b)
+    st_b = r_b["state"]
+    verdicts_bad.append(r_b["reason"])
+check("T11 坏 ts 洪水 80 条只放行 60（兜底桶限流，不再无限放行）",
+      verdicts_bad.count("ok") == 60 and verdicts_bad.count("rate_cap") == 20)
+check("T12 好 ts 路径与坏 ts 兜底桶互不干扰（好 ts 照常放行）",
+      triage.triage(mk_event(ts=ts(0), payload_summary="clean"), state=st_b)["keep"])
+check("T13 坏 ts 兜底桶 key 落 hour 表（可观测可审计）",
+      "ear.radio|badts" in st_b["hour"])
+
+st_j = triage.triage(mk_event(ts=ts(0), payload_summary="json roundtrip"))["state"]
+try:
+    json.dumps(st_j)
+    j_ok = True
+except TypeError:
+    j_ok = False
+check("T14 state 全 JSON 可序列化（cron 落盘前提，审计②）", j_ok)
+st_rt = json.loads(json.dumps(st_j))
+r_rt = triage.triage(mk_event(ts=ts(10), payload_summary="json roundtrip"), state=st_rt)
+check("T15 state JSON 往返后去重窗仍活（roundtrip 后同目标折叠）",
+      not r_rt["keep"] and r_rt["reason"] == "dedup")
+r_aw = triage.triage(mk_event(ts="2026-10-05T21:10:00+00:00", payload_summary="aware ts"),
+                     state=st_rt)
+check("T16 aware/naive 混流相减不炸 TypeError（墙钟比较，zhaozhao1）",
+      r_aw["keep"])
+
 # ────────────────────── 集成：triage → gate → log ──────────────────────
 print("== integration ==")
 
