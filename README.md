@@ -86,7 +86,7 @@ d = digest(read_your_log_since(last_wake))   # your log reader
 
 ## Status
 
-Phase 01 — the three core pieces are green (25/25 checks). Roadmap: organ slot registry, event log format, adapters (Tideline first).
+Phase 02 shipped — organ registry, event log (daily JSONL), and a triage noise gate (60 checks green across both phases). Roadmap: adapters (Tideline first).
 
 ## What's in a name
 
