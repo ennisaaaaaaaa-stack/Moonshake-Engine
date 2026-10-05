@@ -84,7 +84,8 @@ def triage(event, rules=None, state=None):
     """机械分诊。返回 {"keep": bool, "reason": str, "state": 新状态}。
 
     reason：放行时 "ok"；否则为首个命中的规则名（归因顺序）：
-      confidence_floor → injection_pattern → blocklist → dedup → rate_cap
+      confidence_floor → injection_pattern → event_type_injection
+      → blocklist → dedup → rate_cap
     state：不透明（近期窗口），调用方原样传回下一次调用。
       全 JSON 可序列化：时间一律 ISO 字符串，本函数进出时解析（cron 落盘口径）。
     ts 无法解析时：内容检查照跑，窗口检查（dedup/rate）跳过——但计入
@@ -105,9 +106,15 @@ def triage(event, rules=None, state=None):
             or conf < r["confidence_floor"]:
         return {"keep": False, "reason": "confidence_floor", "state": st}
 
-    # 2. 注入句式（dumb injection 黑名单）
+    # 2. 注入句式（dumb injection 黑名单）——payload_summary 与 event_type 同刀
+    #    （v1.2 D：event_type 全链零消费=死字段，牙齿=进 triage 扫描面；
+    #    拒收不 raise——一条脏事件的责任半径只有它自己那条，
+    #    raise 等于给它全场纵火权，中①刚杀的 DoS 病不能从 D 后门请回来）
     if any(p.search(summary) for p in _patterns_for(r)):
         return {"keep": False, "reason": "injection_pattern", "state": st}
+    etype = str(event.get("event_type", ""))
+    if etype and any(p.search(etype) for p in _patterns_for(r)):
+        return {"keep": False, "reason": "event_type_injection", "state": st}
 
     # 3. 关键词黑名单
     low = summary.lower()

@@ -67,6 +67,18 @@ def main():
         check("M1e 两级空段拒（真断言）", False, "应抛 ValueError")
     except ValueError:
         check("M1e 两级空段拒（真断言）", True)
+    try:
+        contract.split_organ_id("ear.r dio")
+        check("M1f 段字符集拒：空格（mingming②欠账，v1.2 落）", False, "应抛 ValueError")
+    except ValueError:
+        check("M1f 段字符集拒：空格（mingming②欠账，v1.2 落）", True)
+    try:
+        contract.split_organ_id("ear|radio")
+        check("M1g 段字符集拒：'|' 撞限流键分隔符", False, "应抛 ValueError")
+    except ValueError:
+        check("M1g 段字符集拒：'|' 撞限流键分隔符", True)
+    check("M1h 合法字符集过：-_ 照放",
+          contract.split_organ_id("ear.radio-2") == ("ear", "radio-2"))
     ok, errs = contract.validate_event(ev(consent_tier=True))
     check("M2a bool 冒充 tier 拒", not ok, str(errs))
     ok, errs = contract.validate_event(ev(consent_tier=4))
@@ -148,6 +160,22 @@ def main():
     vempty0 = consent.enforce_policy(ev(consent_tier=0), policy=pol_empty)
     check("M4d 显式空键档位语义照走（tier0 < min_degraded 1 = 拒）",
           not vempty0["ok"] and vempty0["action"] == "reject", vempty0["reason"])
+
+    # ── M11 长度帽（v1.2：zhaozhaoB/F + mingming②同族，v1.1 欠账这次真落） ──
+    ok, errs = contract.validate_event(ev(payload_summary="长" * 201))
+    check("M11a payload_summary 超长拒（蒸馏摘要不是转写全文）",
+          not ok and any("payload_summary" in e for e in errs), str(errs)[:80])
+    ok, errs = contract.validate_event(ev(event_type="x" * 33))
+    check("M11b event_type 超长拒（类型名不是第二个 summary）",
+          not ok and any("event_type" in e for e in errs), str(errs)[:80])
+    ok, errs = contract.validate_event(ev(meta={"raw_transcript": "字" * 501}))
+    check("M11c meta 文本值超长拒（zhaozhaoB：降级剥 ref 不剥 meta=全量侧门）",
+          not ok and any("meta" in e for e in errs), str(errs)[:80])
+    ok, errs = contract.validate_event(ev(meta={"nested": {"deep": ["字" * 501]}}))
+    check("M11d meta 嵌套值超长也拒（帽跟着值走，不跟层级走）",
+          not ok and any("meta" in e for e in errs), str(errs)[:80])
+    ok, errs = contract.validate_event(ev(meta={"note": "正常长度的元数据"}))
+    check("M11e 合规 meta 照过（帽不误伤）", ok, str(errs))
 
     n = len(results)
     failed = [name for name, ok in results if not ok]

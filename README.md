@@ -16,9 +16,10 @@ Moonshake is that front door. It deliberately knows nothing about memory: it spe
 
 | Piece | File | What it does |
 |---|---|---|
-| **Event contract** | `contract.py` | The shape every sensory event must have. `organ_id` is two-level (`ear.radio`), `consent_tier` is 0–3. Pure data + pure functions, zero dependencies. |
+| **Event contract** | `contract.py` | The shape every sensory event must have. `organ_id` is two-level (`ear.radio`, charset `[A-Za-z0-9_-]`), `consent_tier` is 0–3, and text fields carry hard caps (summary 200 / event_type 32 / meta values 500). Pure data + pure functions, zero third-party deps. |
 | **Consent gate** | `consent_gate.py` | Pure-function verdict per event: `reject` / `write_degraded` / `write_full`. Default policy: lowest tier only — raw samples never leave an organ without an explicit yes. |
 | **Digest inbox** | `digest.py` | Aggregates the event stream into an organ-level overview: dedup with counts, top-K by weight, per-organ / per-channel filtering, explicit cap marking. |
+| **Triage sidecar** | `triage_stats.py` | Diagnostic face for the noise gate: every rejection lands one JSONL line (reason + hit field). Not a consumption face — nothing reads it to make decisions. |
 
 ```python
 from contract import validate_event
@@ -88,7 +89,7 @@ d = digest(read_your_log_since(last_wake))   # your log reader
 
 ## Status
 
-Phase 02 shipped — organ registry, event log (daily JSONL), and a triage noise gate (60 checks green across both phases). Roadmap: adapters (Tideline first).
+v1.2 shipped — the full second-round audit package: A/E declaration wall (modality + emits_tier checked against slot at write time), B/F length caps (summary / event_type / meta text), numeric cursor compare (no more #9999→#10000 string-order inversion), D teeth for event_type (injection scan surface, reject-not-raise), triage sidecar (`triage_stats.jsonl`, diagnostic face), T8/T16 re-pinned. 88 checks green (36 + 52); every fix mutation-tested red-first. Roadmap: adapters (Tideline first).
 
 ## What's in a name
 

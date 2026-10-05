@@ -5,15 +5,28 @@
   只记幸存者（reject = 零行，日志永远纯事件）；
   登记默认严格（strict=True 未查登记就不许写——fail-closed）。
 
-铁律：只 import 同仓纯函数（contract / consent_gate / registry），
-不 import 记忆库。写入路径薄：形状检查 → 登记检查 → 序列化 → 追加一行。
+铁律：只 import 同仓纯函数（contract / consent_gate / registry），不 import
+记忆库。写入路径薄：形状检查 → 登记检查 → 声明对照 → 序列化 → 追加一行。
 不做任何变形——降级发生在 gate；但 write_degraded 行由本模块自己套
 degraded_event（调用方传原始事件+裁决即可），杜绝「忘了降级就落库」
 的人祸口子：存储里永远不可能出现「标着降级却带着原始 ref」的行。
 
-row_id = <YYYYMMDD>#<seq>（当日文件内序号，4 位零填充）——字符串
-字典序即时间序（日期定宽 8 + 序号定宽 4），read_since 的游标比较
-直接用字符串比较，无时钟依赖。
+声明对照墙（v1.2，zhaozhaoA/E——「声明了没人读」同族病一次治）：
+  modality  : 事件自报 modality 必须与 slot 声明一致，失配 fail-closed。
+               modality 是器官的事实声明不是许可——写路径对照事实不越权
+               （防选键攻击：policy 只给 audio 开 min_tier_full=2，任何器官
+               自称 modality=audio 就吃到全量口子）。
+  emits_tier: 声明不是许可，但声明了就得被读——slot 声明 emits_tier=N 时，
+               事件 consent_tier > N 一律 fail-closed（zhaozhaoE：emits_tier=0
+               的器官发 tier3 事件一路绿灯=死字段；牙齿长在对照上，不长在
+               「登记了就信」上）。
+  registry 无声明字段（如老 registry 未写 emits_tier）= 不对照，照旧放行
+  ——牙齿对照「声明与行为不符」，不强迫声明（registry 是电话簿不是警察局）。
+
+row_id = <YYYYMMDD>#<seq>（当日文件内序号，4 位零填充）——v1.2 起游标
+比较不再信字符串字典序：read_since 按 (日期, 序号数值) 比较（zhaozhaoC：
+#9999 > #10000 字符串序反转，当日满万行时游标停在 #9999 会漏掉
+#10000 起的全部行——定宽 4 假设在 seq 破万时本身裂）。
 文件名带横杠（2026-10-05.jsonl，设计稿钉的形状，人眼可读）；
 row_id 紧凑无横杠——两个名字两种口径，互不混用。
 """
@@ -57,11 +70,37 @@ def _row_id_for(log_dir, date_str):
     return f"{date_str}#{seq + 1:04d}"
 
 
+def _check_declarations(event, registry, oid):
+    """A/E 声明对照墙（v1.2）：slot 声明的 modality / emits_tier 对照事件自报。
+
+    返回错误字符串（None=通过）。registry 无声明 = 不对照（电话簿不是警察局，
+    牙齿对照「声明与行为不符」，不强迫声明）。
+    """
+    slot = registry.get("slots", {}).get(oid, {})
+
+    slot_mod = slot.get("modality")
+    if slot_mod and event.get("modality") != slot_mod:
+        return (f"modality 失配 fail-closed: {oid} 声明 {slot_mod!r}，"
+                f"事件自报 {event.get('modality')!r}（zhaozhaoA：防选键攻击）")
+
+    slot_tier = slot.get("emits_tier")
+    evt_tier = event.get("consent_tier")
+    if (isinstance(slot_tier, int) and not isinstance(slot_tier, bool)
+            and isinstance(evt_tier, int) and not isinstance(evt_tier, bool)
+            and evt_tier > slot_tier):
+        return (f"consent_tier 超声明 fail-closed: {oid} 声明 emits_tier={slot_tier}，"
+                f"事件 consent_tier={evt_tier}（zhaozhaoE：声明不是许可，但声明了就被读）")
+
+    return None
+
+
 def log_gated(log_dir, event, verdict, registry=None, strict=True, now=None):
     """把 gate 裁决落一行。返回落库的 row；reject 返回 None（零行）。
 
     strict=True（默认）：必须传 registry 且器官在岗，否则 ValueError——
     fail-closed：「ear.rdaio 死在门口，不死在数据里」。
+    strict=True 且器官已登记：slot 的 modality / emits_tier 声明对照事件
+    自报，失配 ValueError（A/E 墙，v1.2）。
     write_degraded：存储的就是剥好的降级形态（本函数套 degraded_event）。
     """
     action = verdict.get("action")
@@ -80,6 +119,9 @@ def log_gated(log_dir, event, verdict, registry=None, strict=True, now=None):
             raise ValueError("strict=True 需要 registry（fail-closed：不查登记就不许写）")
         if not is_registered(registry, oid):
             raise ValueError(f"未登记器官 fail-closed: {oid!r}（死在门口，不死在数据里）")
+        decl_err = _check_declarations(event, registry, oid)
+        if decl_err:
+            raise ValueError(decl_err)
 
     row_event = degraded_event(event) if action == "write_degraded" else dict(event)
     logged_at = _now_iso(now)
@@ -123,13 +165,27 @@ def scan(log_dir, date=None):
     return [r for r in _iter_rows(log_dir) if r.get("row_id", "").split("#")[0] == norm]
 
 
+def _row_key(row_id):
+    """row_id → (日期串, 序号数值)（zhaozhaoC，v1.2）：比较用元组，不信定宽字符串序。
+
+    非法形状（无 # / 序号非数字）→ (原串, -1)：永远排在最前，永不挡增量读
+    ——脏行不吞后面的合法行。
+    """
+    try:
+        date_part, seq_part = str(row_id).split("#", 1)
+        return (date_part, int(seq_part))
+    except (ValueError, AttributeError):
+        return (str(row_id), -1)
+
+
 def read_since(log_dir, cursor):
     """增量读：cursor = 上次看到的最后 row_id（None = 从头）。
 
-    返回 (rows, new_cursor)。row_id 字符串字典序 = 时间序（见模块注释），
-    游标比较即字符串比较。无新行时 new_cursor 原样返回。
+    返回 (rows, new_cursor)。游标比较按 (日期, 序号数值)（v1.2，zhaozhaoC）——
+    #9999/#10000 定宽字符串序反转不再漏行。无新行时 new_cursor 原样返回。
     """
+    cur_key = _row_key(cursor) if cursor is not None else None
     rows = [r for r in _iter_rows(log_dir)
-            if cursor is None or r.get("row_id", "") > cursor]
+            if cur_key is None or _row_key(r.get("row_id", "")) > cur_key]
     new_cursor = rows[-1]["row_id"] if rows else cursor
     return rows, new_cursor
