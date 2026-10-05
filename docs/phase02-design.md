@@ -123,16 +123,50 @@ First concrete adapter: Tideline (`tideline-memory` repo) — rows → sensory c
 
 ---
 
-## Open decisions — need a verdict
+## Triage — the noise gate (PROPOSED 2026-10-05, awaiting nod)
 
-**[OPEN-1] Storage medium**
-- A. Daily JSONL files *(recommended)* — plain text, `tail`/`grep` auditable, rotation = filename, append-only, no cross-process locks. Cost: filtering logic is ours (digest already does the aggregation side).
-- B. SQLite — queryable, transactional. Cost: binary (not eyeball-auditable), WAL mode needed for multi-process, rotation manual, one more thing to corrupt.
+Two different axes live at the organ boundary, and they protect different things:
 
-**[OPEN-2] Reject tombstones**
-- A. Survivors only *(recommended)* — `reject` = zero rows, log stays pure events.
-- B. Tombstone rows (no payload, just organ_id + reason) — observability of "how much was refused today", at the cost of mixing non-events into the ledger.
+- **Consent gate** protects *privacy*: what may leave the organ. Owner: the user. Verdict: reject / degraded / full.
+- **Triage** (new) protects *attention*: what deserves to exist as an event at all. Junk never reaches the gate, the log, or a waking session's eyes.
 
-**[OPEN-3] Registry enforcement at write time**
-- A. Strict by default *(recommended)* — unregistered organ refuses to log (fail-closed; catches `ear.rdaio` typos).
-- B. Advisory — anything contract-valid logs; registry is purely a directory.
+### Placement
+
+Triage runs on **contract events** — after `validate_event`, before `enforce_policy`:
+
+```
+world → organ collector (cron) → event → [1. contract] → [2. TRIAGE] → [3. gate] → log
+```
+
+Why not earlier ("before information enters the organ", literally): every organ's raw stream is its own dialect — HTML, RSS, filenames, waveforms. A filter over raw streams can't be standardized without re-inventing a collector spec. The contract event is the first standard point, and building a dict is cheap. Same intent — noise control at the boundary — better leverage point.
+
+### Rules are mechanical, by definition
+
+Deterministic only, no model calls, no LLM:
+
+- keyword blocklist on `payload_summary`
+- per-organ rate cap (max N events / hour — a stuck collector must not flood the log)
+- dedup window (same `(organ_id, payload_summary)` within X minutes → collapse; digest dedups too, but that's post-admission — this one stops the flood at the door)
+- confidence floor (below X = the collector itself doesn't trust it)
+
+### Semantics
+
+- Triage drops are silent in the event log — survivors-only, same verdict as consent rejects.
+- Visibility via a sidecar: `triage_stats.jsonl`, one line per day per organ (drop counts by reason). Observability without polluting the ledger.
+- **Design rule 5 stays intact**: triage reads explicit rules, never `saliency_hint`. Admission-by-rules ≠ attention-by-hint — the moment triage starts reading hints, "admission ≠ attention" collapses into one knob.
+
+### API sketch (pure, zero-dep, same family as gate)
+
+```python
+DEFAULT_RULES = {"rate_per_hour": 60, "dedup_window_min": 30, "confidence_floor": 0.2}
+
+triage(event, rules=None) -> {"keep": bool, "reason": str}
+```
+
+---
+
+## Resolved decisions — 2026-10-05
+
+- **Storage medium → A: daily JSONL files.** Plain text, `tail`/`grep` auditable, rotation = filename, append-only. *(delegated to implementation side, settled same day)*
+- **Reject tombstones → A: survivors only.** `reject` = zero rows. The log stays pure events. *(user verdict)*
+- **Registry enforcement → A: strict by default.** Unregistered organs fail-closed at write time — `ear.rdaio` dies at the door, not in the data. *(user verdict)*
