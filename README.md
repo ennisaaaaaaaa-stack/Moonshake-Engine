@@ -30,6 +30,52 @@ v = enforce_policy(evt)                        # consent verdict
 d = digest(events, organ_filter="ear")         # "what did the ears hear?"
 ```
 
+## Usage
+
+Moonshake is a library, not a daemon. Nothing in it runs on its own — no loop, no clock, no heartbeat. Something has to call it, and in practice that caller is one of two shapes:
+
+- **A cron job** — the scheduled pulse. It polls an organ (a radio feed, a camera directory, an inbox), wraps what it finds into contract events, gates them, and appends what passed to the event log.
+- **An event-woken session** — a webhook or trigger wakes the agent; the waking session reads `digest()` first: "ears: 8 radio events, top 3 by weight" — before it decides anything.
+
+The two halves never need to share a process. Senses run when the world has something to say; attention runs when the agent wakes. Moonshake is the contract between them.
+
+```python
+# ── organ side (cron): something was heard ──
+from contract import validate_event
+from consent_gate import enforce_policy, degraded_event
+
+evt = {
+    "ts": "2026-10-05T21:04:00+08:00",
+    "organ_id": "ear.radio",
+    "modality": "audio",
+    "event_type": "song_played",
+    "payload_summary": "Mozart — Lacrimosa",
+    "confidence": 0.9,
+    "consent_tier": 1,
+    "saliency_hint": 0.4,
+    # "payload_ref": "/raw/...",   # raw sample — dropped unless a policy explicitly admits it
+}
+ok, errs = validate_event(evt)               # 1. shape
+v = enforce_policy(evt)                      # 2. consent verdict
+if v["action"] == "write_degraded":
+    row = degraded_event(evt)                # 3. strip the raw ref
+elif v["action"] == "write_full":
+    row = evt
+else:                                        # "reject" — nothing leaves the organ
+    row = None
+# append row to your event log (Moonshake's own log format: phase 02)
+```
+
+```python
+# ── session side (woken by an event): ears first ──
+from digest import digest
+
+d = digest(read_your_log_since(last_wake))   # your log reader
+# → {'organs': {'ear': {'channels': {'radio': {'count': 8,
+#      'top': [{'summary': 'Mozart — Lacrimosa', 'weight': 0.36, 'count': 2}, ...]}}}},
+#    'dropped_by_cap': False}
+```
+
 ## Design rules
 
 1. **Consent defaults to the lowest tier.** "最低档授权就够了……器官毕竟是没有经过真实判断筛选的内容" — organs emit unfiltered content; the burden of proof is on wanting *more*, not less. Any organ wanting to store raw samples passes an explicit policy (whitelist semantics, fail-closed without `*`).
